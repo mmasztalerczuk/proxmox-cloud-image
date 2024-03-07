@@ -1,0 +1,154 @@
+
+
+name: GitHub Actions Demo
+run-name: ${{ github.actor }} is testing out GitHub Actions 🚀
+on: 
+  push:
+    tags:
+    - '*'
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      pull-requests: write
+      repository-projects: write    
+    steps:
+      - uses: actions/checkout@v2
+      - name: Update
+        run: sudo apt-get update
+      - name: Install packages
+        run: sudo apt-get install debootstrap qemu-utils qemu-system
+      - name: Create folder
+        run: mkdir $HOME/cloud-image-ubuntu-from-scratch
+      - name: Create raw image
+        run: dd if=/dev/zero of=cloud-ubuntu-image.raw bs=1 count=0 seek=30212254720 status=progress
+      - name: Test 2
+        run: |
+          sed -e 's/\s*\([\+0-9a-zA-Z]*\).*/\1/' << EOF | sudo fdisk cloud-ubuntu-image.raw
+          o # clear the in memory partition table
+          n # new partition
+          p # primary partition
+          1 # partition number 1 
+              # default - start at beginning of disk
+          +512M # 512 MB boot parttion
+          n # new partition
+          p # primary partition
+          2 # partion number 2
+              # default, start immediately after preceding partition
+              # default, extend partition to end of disk
+          a # make a partition bootable
+          1 # bootable partition is partition 1 -- /dev/loop0p1
+          p # print the in-memory partition table
+          w # write the partition table
+          q # and we're done
+          EOF      
+      - name: Loop device
+        run: sudo losetup -fP cloud-ubuntu-image.raw
+      - name:  Loop device
+        run: sudo losetup -a
+      - name: Format
+        run: sudo mkfs.ext4 /dev/loop3p1     
+      - name: Format
+        run: sudo mkfs.ext4 /dev/loop3p2       
+      - name: Create chroot
+        run: mkdir $HOME/cloud-image-ubuntu-from-scratch/chroot
+      - name: Mount chroot
+        run: sudo mount /dev/loop3p2 $HOME/cloud-image-ubuntu-from-scratch/chroot/      
+      - name: Create boot
+        run: sudo mkdir $HOME/cloud-image-ubuntu-from-scratch/chroot/boot
+      - name: Mount boot
+        run: sudo mount /dev/loop3p1 $HOME/cloud-image-ubuntu-from-scratch/chroot/boot
+      - name: debootstrap
+        run: sudo debootstrap --variant=minbase --components "main,universe" bookworm $HOME/cloud-image-ubuntu-from-scratch/chroot http://deb.debian.org/debian/
+      - name: Mount dev
+        run: sudo mount --bind /dev $HOME/cloud-image-ubuntu-from-scratch/chroot/dev 
+      - name: Mount run
+        run: sudo mount --bind /run $HOME/cloud-image-ubuntu-from-scratch/chroot/run 
+      - name: ls -larth /dev
+        run: ls -larth /dev      
+      - name: Chroot
+        run: |
+          cat << EOF | sudo chroot $HOME/cloud-image-ubuntu-from-scratch/chroot
+          mount none -t proc /proc   
+          mount none -t sysfs /sys 
+          mount none -t devpts /dev/pts
+          export HOME=/root  
+          export LC_ALL=C
+          echo "ubuntu-image" > /etc/hostname
+          UUID_1="$(ls -l /dev/disk/by-uuid | grep loop3p1 | awk '{ print $9 }')"
+          UUID_2="$(ls -l /dev/disk/by-uuid | grep loop3p2 | awk '{ print $9 }')"
+          echo "UUID=$(ls -l /dev/disk/by-uuid | grep loop3p2 | awk '{ print $9 }')" "              /               ext4    errors=remount-ro               0       1" > /etc/fstab
+          echo "UUID=$(ls -l /dev/disk/by-uuid | grep loop3p1 | awk '{ print $9 }')" "              /boot           ext4    defaults                        0       2" >> /etc/fstab                                                           
+          apt-get update
+          apt-get install -y systemd-sysv
+          dbus-uuidgen > /etc/machine-id
+          ln -fs /etc/machine-id /var/lib/dbus/machine-id
+          dpkg-divert --local --rename --add /sbin/initctl
+          ln -s /bin/true /sbin/initctl
+          apt-get install -y wget
+          apt-get install -y dialog
+          apt-get install -y os-prober ifupdown network-manager resolvconf locales build-essential module-assistant cloud-init grub-pc grub2 linux-image-amd64
+      
+          dpkg-reconfigure network-manager
+          
+          grub-install /dev/loop3
+          update-grub
+          truncate -s 0 /etc/machine-id
+          rm /sbin/initctl
+          dpkg-divert --rename --remove /sbin/initctl
+          
+          echo "deb [arch=amd64] http://download.proxmox.com/debian/pve bookworm pve-no-subscription" > /etc/apt/sources.list.d/pve-install-repo.list
+          wget https://enterprise.proxmox.com/debian/proxmox-release-bookworm.gpg -O /etc/apt/trusted.gpg.d/proxmox-release-bookworm.gpg 
+          apt update -y && apt full-upgrade -y
+                      
+          apt-get clean
+          apt-get install -y ifupdown2
+          apt-get clean
+          apt-get install -y proxmox-default-kernel
+          apt-get clean
+          apt-get install -y proxmox-ve postfix open-iscsi
+          grub-install /dev/loop3
+          update-grub          
+          rm -rf /tmp/* ~/.bash_history
+          umount /proc
+          umount /sys
+          umount /dev/pts
+          export HISTSIZE=0                
+          EOF
+      - name: Umount
+        run: sudo umount $HOME/cloud-image-ubuntu-from-scratch/chroot/dev
+
+      - name: Umount
+        run: sudo umount $HOME/cloud-image-ubuntu-from-scratch/chroot/run
+
+      - name: Umount
+        run: sudo umount $HOME/cloud-image-ubuntu-from-scratch/chroot/boot
+
+      - name: Umount
+        run: sudo umount $HOME/cloud-image-ubuntu-from-scratch/chroot                        
+
+      - name: Loop device
+        run: sudo losetup -D
+
+      - name: Convert image
+        run: qemu-img convert -f raw cloud-ubuntu-image.raw -O qcow2 ubuntu-image.qcow2
+
+      - name: Test 15
+        run: ls -larth ubuntu-image.qcow2
+
+      - name: compress
+        run: tar -czvf name-of-archive.tar.gz ubuntu-image.qcow2
+
+      - name: test
+        run: ls -larth name-of-archive.tar.gz     
+
+      - uses: ncipollo/release-action@v1
+        with:
+          artifacts: "name-of-archive.tar.gz"
+
+    
+
+
+      
+
